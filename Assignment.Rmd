@@ -1,0 +1,135 @@
+---
+title: "Machine Learning Assignment"
+author: "Paul Lacock"
+date: "6 November 2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Executive Summary
+
+The objective of this exercise is to develop a random forest machine learning model to classify the manner in which human subjects carried out a simple dumbbell curl exercise. The five categories consist of carrying the exercise correctly plus four predefined categories of error. 
+
+The data set used for this purpose contains numerous acceleration and gyroscopic measurements obtained through sensors attached to the subjects.
+
+Cross-validation was carried out with the training data resampled 10 times, with each resampling being segmented into a training and a validation set. A random forest model was fitted for each resampling and tested against the validation data set. Model performance measured in terms of accuracy was consistently good and the final model selected was simply the last one to be produced in the cross-validation. This model achieved accuracy of 99.52% on the validation data set. 
+
+The classification error (1 - accuracy) across the 10 resamplings was averaged to obtain an estimate of the out-of-sample error of 0.456%. This is the error rate which we expect to see if this model was applied to data which was not in any way involved in the development of the model.
+
+The selected model was then used to attempt to classify the manner in which the exercise was carried out based on data in a 'test' dataset which did not contain information on the actual correct categorisation for those attempts.
+
+
+## Data and Exploratory Data Analysis
+
+The data for this project came from research published by Velloso et al 2013. The training data contained 19622 observations of 160 variables (including the target variable 'classe'). Multiple observations were taken during each attempt at the exercise by each subject.
+
+```{r import_data, echo=FALSE}
+train_raw <- read.csv("C:/Users/Paul/Onedrive/Serious stuff/Data Science/Coursera DS Specialisation/08 Machine Learning/Assignment/pml-training.csv", header = T)
+test_raw <- read.csv("C:/Users/Paul/Onedrive/Serious stuff/Data Science/Coursera DS Specialisation/08 Machine Learning/Assignment/pml-testing.csv", header = T)
+```
+
+## Data pre-processing
+
+A large proportion of the variables are very sparsely populated (mostly NA or "") as these are summary statistics (e.g. mean, variance, minimum and maximum) of the sensor data, only calculated once for each time window and therefore only populated in the last observation in each time window (each window consisting of multiple observations). A large proportion of these observations that include the summary data for the window are missing. It was therefore decided to exclude these fields from the training data.
+
+The training and test data both include a field containing the window number. This represents target leakage as the exercise classification is constant across a window and therefore knowing the window number associated with an observation in the test data effectively allows the correct classification to be looked up in the training data. The window number field has therefore been excluded from the training data.
+
+Several other fields not relevant to the prediction problem, e.g. timestamp, were also excluded.
+
+It was considered whether the remaining features should be further narrowed down by evaluating their predictiveness prior to carrying out the random forest modelling. Since some of these features are effectively a decomposition of a process - e.g. acceleration measured on the x, y and z axes - it was felt that assessing these features individually may require more sophisticated techniques than justified by this problem, especially since an initial attempt to produce a random forest model produced good results including a very small classification error on the validation data.
+
+The user_name and classe variables were converted to factors. All other remaining features were numeric.
+
+The final training set contained 160 features including the target variable.
+
+Identical pre-processing was applied to the test data.
+
+```{r select_useful, echo=FALSE}
+# Select columns useful for model development
+
+useful_cols <- data.frame(name = colnames(train_raw), has_use = rep(TRUE, ncol(train_raw)))
+cut_off <- 0.5
+
+# Identify all columns mostly NA or ""
+for (col in colnames(train_raw)) {
+    if (anyNA(train_raw[col])) {
+        if (mean(is.na(train_raw[col])) > cut_off) {
+            useful_cols[useful_cols$name==col,]$has_use <- FALSE
+        }
+    } 
+    else if (mean(train_raw[col] == "") > cut_off) {
+        useful_cols[useful_cols$name==col,]$has_use <- FALSE
+    }
+}
+
+# Other columns which we know aren't useful
+for (col in c("X", "raw_timestamp_part_1", "raw_timestamp_part_2", "cvtd_timestamp", "new_window", "num_window")) {
+    useful_cols[useful_cols$name==col,]$has_use <- FALSE
+}
+
+# Prune down to useful variables
+train <- train_raw[,useful_cols[useful_cols$has_use==TRUE,]$name]
+train$user_name <- as.factor(train$user_name)
+train$classe <- as.factor(train$classe)
+
+test <- test_raw[,-160]
+useful_cols_test <- useful_cols[-160,]
+test <- test[,useful_cols_test[useful_cols_test$has_use==TRUE,]$name]
+test$user_name <- as.factor(test$user_name)
+```
+
+## Cross-validation and model-fitting
+
+The createDataPartition function in the caret package in R was used to create 10 partitions of the full training data set into training (80%) and validation (20%) sets. The randomForest function from the randomForest package in R was used to fit random forest models to each of the training data sets, using the default parameters.
+
+The classification errors were recorded for both the training and validation data, for each of the partitions. 
+```{r cross_validation, echo=FALSE, warning=FALSE, message=FALSE}
+# Set up for cross-validation
+library(caret)
+library(randomForest)
+
+set.seed(12345)
+partitions <- createDataPartition(y=train$classe, times = 10, p = 0.8, list = T)
+
+fold_errs <- data.frame(trainErr = rep(NA, 10), testErr = rep(NA, 10))
+for (i in 1:10) {
+    thisPartTrain <- train[partitions[[i]],]
+    thisPartTest <- train[-partitions[[i]],]
+    thisRF <- randomForest(classe ~ ., data = thisPartTrain)
+    fold_errs[i, ]$trainErr <- 1 - confusionMatrix(thisRF$predicted, thisPartTrain$classe)$overall[1]
+    thisPred <- predict(thisRF, thisPartTest)
+    fold_errs[i, ]$testErr <- 1 - confusionMatrix(thisPred, thisPartTest$classe)$overall[1]
+}
+print(fold_errs)
+```
+The errors are very small reflecting the fact that each of the models correctly classifies about 99.5% of observations. The fact that the errors on the training and validation sets are similar indicates that there is no evidence of over-fitting.
+
+The performance across the classifications is consistently good as show in the confusion matrix and other performance figures from the application of the selected model to the validation data:
+```{r confusion, echo=FALSE}
+confusionMatrix(thisPred, thisPartTest$classe)
+```
+The classification errors for the validation data sets were averaged to obtain an estimate of the expected out-of-sample error. As would be expected due to the smaller sample size in the validation sets, the variance of the errors in the validation set is higher than in the training data.
+
+```{r OOS_error, echo=FALSE}
+# calculate the mean of the classification error on the validation data sets
+sapply(fold_errs, mean)
+sapply(fold_errs, var)
+```
+
+## Applying the model to the Quiz/Test data
+
+The selected model was then applied to the Quiz data to attempt to correctly classify each of the 20 observations provided. The resulting predictions are as follows:
+```{r quiz, echo=FALSE}
+# Predict results for quiz test data
+
+quizPred <- predict(thisRF, test)
+print(quizPred)
+```
+
+
+
+
+
